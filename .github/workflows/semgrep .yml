@@ -1,0 +1,32 @@
+name: Semgrep Scan
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+permissions:
+  contents: read
+  security-events: write   # Security 탭(SARIF 업로드)에 필수
+
+jobs:
+  semgrep:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run Semgrep
+        uses: returntocorp/semgrep-action@v1
+        with:
+          config: p/ci
+          output: semgrep.sarif      # Semgrep 결과 파일 생성
+          sarif: semgrep.sarif       # SARIF 출력 옵션
+
+      # SARIF 결과를 GitHub Security(Code Scanning Alerts)에 업로드
+      - name: Upload SARIF to GitHub Security
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: semgrep.sarif
