@@ -2,32 +2,26 @@ name: Gitleaks Secret Scan
 
 on:
   push:
-#    branches: [ "main" ]
+    branches: [ "main" ]
   pull_request:
-#    branches: [ "main" ]
-#  schedule:
-#    - cron: "0 18 * * *" # 매일 18:00 UTC (한국시간 새벽 3시쯤) 실행, 필요하면 수정
+    branches: [ "main" ]
 
 jobs:
-  gitleaks-scan:
-    name: Run Gitleaks
+  gitleaks:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # 전체 히스토리 필요 시 0, 최근만 보고 싶으면 1
+          fetch-depth: 0
 
       - name: Run Gitleaks
         uses: gitleaks/gitleaks-action@v2
-#        with:
-#          args: detect --source . --no-git --report-format sarif --report-path gitleaks.sarif
-          # --no-git 빼면 Git 히스토리 전체까지 검사
-          # 필요에 따라 args 조정
-
-      # GitHub Code Scanning에 결과 업로드 (Security 탭에 표시)
-      - name: Upload Gitleaks report to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: gitleaks.sarif
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Organization repo면 필요
+          # GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+          # 커스텀 설정 쓰고 싶으면 (예시)
+          # GITLEAKS_CONFIG: .github/gitleaks.toml
+          # SARIF 업로드 끄고 싶으면
+          # GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
