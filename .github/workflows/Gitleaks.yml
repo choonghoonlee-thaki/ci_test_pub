@@ -2,9 +2,22 @@ name: Gitleaks Secret Scan
 
 on:
   push:
-    branches: [ "master" ]
+    branches: [ "masters" ]
   pull_request:
-    branches: [ "master" ]
+    branches: [ "masters" ]
+
+permissions:
+  # required for all workflows
+  security-events: write
+  pull-requests: write
+
+  # required to fetch internal or private CodeQL packs
+  packages: read
+
+  # only required for workflows in private repositories
+  actions: read
+  contents: read
+
 
 jobs:
   gitleaks:
