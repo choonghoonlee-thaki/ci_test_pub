@@ -2,40 +2,133 @@ name: Semgrep Scan
 
 on:
   pull_request:
-  #  types: [opened, synchronize, reopened]
   push:
     branches:
-  #    - main
 
 permissions:
   contents: read
-  pull-requests: write         # PR에 annotation 남기기 위해 필요
-  security-events: write       # Security tab(Code Scanning Alerts)에 SARIF 업로드 위해 필요
+  pull-requests: write
+  security-events: write
+  actions: read
 
 jobs:
   semgrep:
     name: Run Semgrep
     runs-on: ubuntu-latest
-
+    
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
         with:
-          fetch-depth: 0       # diff 기반 룰이 제대로 동작하려면 0으로 설정 필수
-
+          fetch-depth: 0
+      
       - name: Run Semgrep
+        id: semgrep
         uses: semgrep/semgrep-action@v1
         with:
-          config: "p/ci"       # Semgrep 기본 CI 룰셋
-          
-          # Security Event(Code Scanning Alerts)에 표시 위한 SARIF 생성
+          config: "p/ci"
           generateSarif: true
-
-          # Semgrep Cloud 사용 안 하므로 false로 반드시 설정
-          publishResults: false
-
-      # Security Events로 업로드(SARIF)
+        env:
+          # PR에 자동으로 코멘트를 추가하기 위해 필요
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      # Security 탭에 SARIF 업로드
       - name: Upload SARIF to GitHub Security
+        if: always()
         uses: github/codeql-action/upload-sarif@v2
         with:
           sarif_file: semgrep.sarif
+      
+      # PR에 코멘트 추가
+      - name: Comment PR with Semgrep Results
+        if: github.event_name == 'pull_request' && always()
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            
+            // SARIF 파일 읽기
+            let sarif;
+            try {
+              sarif = JSON.parse(fs.readFileSync('semgrep.sarif', 'utf8'));
+            } catch (error) {
+              console.log('SARIF 파일을 찾을 수 없습니다.');
+              return;
+            }
+            
+            const results = sarif.runs[0].results || [];
+            
+            if (results.length === 0) {
+              const comment = '## ✅ Semgrep 스캔 완료\n\n보안 이슈가 발견되지 않았습니다.';
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: comment
+              });
+              return;
+            }
+            
+            // 심각도별로 그룹화
+            const severityMap = {
+              error: [],
+              warning: [],
+              note: []
+            };
+            
+            results.forEach(result => {
+              const level = result.level || 'note';
+              const location = result.locations[0].physicalLocation;
+              const path = location.artifactLocation.uri;
+              const line = location.region.startLine;
+              const message = result.message.text;
+              const ruleId = result.ruleId;
+              
+              severityMap[level].push({
+                path,
+                line,
+                message,
+                ruleId
+              });
+            });
+            
+            // 코멘트 생성
+            let comment = '## 🔍 Semgrep 스캔 결과\n\n';
+            comment += `총 **${results.length}개**의 이슈가 발견되었습니다.\n\n`;
+            
+            if (severityMap.error.length > 0) {
+              comment += `### 🔴 Error (${severityMap.error.length})\n\n`;
+              severityMap.error.forEach(item => {
+                comment += `- **${item.ruleId}**\n`;
+                comment += `  - 파일: \`${item.path}:${item.line}\`\n`;
+                comment += `  - 내용: ${item.message}\n\n`;
+              });
+            }
+            
+            if (severityMap.warning.length > 0) {
+              comment += `### 🟡 Warning (${severityMap.warning.length})\n\n`;
+              severityMap.warning.forEach(item => {
+                comment += `- **${item.ruleId}**\n`;
+                comment += `  - 파일: \`${item.path}:${item.line}\`\n`;
+                comment += `  - 내용: ${item.message}\n\n`;
+              });
+            }
+            
+            if (severityMap.note.length > 0) {
+              comment += `### ℹ️ Note (${severityMap.note.length})\n\n`;
+              severityMap.note.forEach(item => {
+                comment += `- **${item.ruleId}**\n`;
+                comment += `  - 파일: \`${item.path}:${item.line}\`\n`;
+                comment += `  - 내용: ${item.message}\n\n`;
+              });
+            }
+            
+            comment += '\n---\n자세한 내용은 [Security 탭](/${{ github.repository }}/security/code-scanning)에서 확인하세요.';
+            
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: comment
+            });
