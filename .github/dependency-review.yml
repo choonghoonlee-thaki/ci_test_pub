@@ -1,0 +1,35 @@
+
+## PR단계에서 Dependency Check -> 취약한 컴포넌트 발견시 Alert
+# 이 Action이 하는 일
+# PR diff 기준으로
+# manifest / lockfile 변경분만 검사
+# GitHub Advisory Database 기반
+# CI 실패 가능 (blocking)
+
+name: Dependency Review
+
+on:
+  pull_request:
+    branches:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  dependency-review:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Dependency Review
+        uses: actions/dependency-review-action@v4
+        with:
+          # HIGH, CRITICAL만 실패
+          fail-on-severity: high
+
+          # 라이선스까지 보고 싶으면 true
+          # (처음엔 false 추천)
+          license-check: false
+
+          # PR 코멘트로 결과 남김
+          comment-summary-in-pr: true
