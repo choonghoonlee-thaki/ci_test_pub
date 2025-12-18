@@ -1,8 +1,0 @@
-{
-  "name": "cve-demo-node",
-  "version": "1.0.0",
-  "private": true,
-  "dependencies": {
-    "handlebars": "4.7.6"
-  }
-}

@@ -27,8 +27,48 @@ jobs:
         with:
           fetch-depth: 0
       
-      - name: Run Semgrep Security Audit
+      # PR인 경우 변경된 파일 목록 가져오기
+      - name: Get changed files (PR only)
+        id: changed-files
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const prFiles = await github.rest.pulls.listFiles({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+              per_page: 100
+            });
+            
+            // 스캔 가능한 파일 확장자 필터링 (삭제된 파일 제외)
+            const scanExtensions = ['.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.go', '.rb', '.php', '.c', '.cpp', '.h', '.cs', '.swift', '.kt', '.scala', '.rs'];
+            
+            const changedFiles = prFiles.data
+              .filter(file => file.status !== 'removed')
+              .filter(file => scanExtensions.some(ext => file.filename.endsWith(ext)))
+              .map(file => file.filename);
+            
+            console.log('변경된 스캔 대상 파일:', changedFiles);
+            
+            if (changedFiles.length === 0) {
+              console.log('스캔할 파일이 없습니다.');
+              core.setOutput('has_files', 'false');
+              core.setOutput('files', '');
+            } else {
+              core.setOutput('has_files', 'true');
+              // 파일 목록을 공백으로 구분하여 저장
+              core.setOutput('files', changedFiles.join(' '));
+            }
+            
+            return changedFiles;
+      
+      # Push인 경우: 전체 스캔
+      - name: Run Semgrep Full Scan (Push)
+        if: github.event_name == 'push'
         run: |
+          echo "🔍 Push 이벤트: 전체 코드베이스 스캔"
           semgrep scan \
             --config p/security-audit \
             --sarif \
@@ -36,6 +76,28 @@ jobs:
             --verbose
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      # PR인 경우: 변경된 파일만 스캔
+      - name: Run Semgrep Diff Scan (PR)
+        if: github.event_name == 'pull_request' && steps.changed-files.outputs.has_files == 'true'
+        run: |
+          echo "🔍 PR 이벤트: 변경된 파일만 스캔"
+          echo "스캔 대상 파일: ${{ steps.changed-files.outputs.files }}"
+          semgrep scan \
+            --config p/security-audit \
+            --sarif \
+            --output=semgrep.sarif \
+            --verbose \
+            ${{ steps.changed-files.outputs.files }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      # PR에서 스캔할 파일이 없는 경우 빈 SARIF 생성
+      - name: Create empty SARIF (No scannable files)
+        if: github.event_name == 'pull_request' && steps.changed-files.outputs.has_files == 'false'
+        run: |
+          echo "스캔할 파일이 없습니다. 빈 SARIF 파일 생성."
+          echo '{"version":"2.1.0","$schema":"https://json.schemastore.org/sarif-2.1.0.json","runs":[{"tool":{"driver":{"name":"Semgrep","semanticVersion":"1.0.0","rules":[]}},"results":[]}]}' > semgrep.sarif
       
       - name: Upload SARIF to GitHub Security
         uses: github/codeql-action/upload-sarif@v3
@@ -65,7 +127,7 @@ jobs:
             const rules = sarif.runs?.[0]?.tool?.driver?.rules || [];
             
             if (results.length === 0) {
-              const comment = '## ✅ Semgrep 스캔 완료\n\n보안 이슈가 발견되지 않았습니다.';
+              const comment = '## ✅ Semgrep 스캔 완료\n\n변경된 파일에서 보안 이슈가 발견되지 않았습니다.';
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -192,8 +254,9 @@ jobs:
             const totalInfo = severityMap.info.items.length;
             const total = totalCritical + totalHigh + totalMedium + totalLow + totalInfo;
             
-            // 코멘트 헤더 생성
+            // Summary 코멘트 생성
             let comment = '## 🔍 Semgrep Security Scan Results\n\n';
+            comment += '> 📂 **Scanned**: Changed files in this PR only\n\n';
             comment += '### 📊 Summary\n\n';
             comment += '| Severity | Count |\n';
             comment += '|----------|-------|\n';
@@ -206,60 +269,26 @@ jobs:
             
             if (totalCritical > 0 || totalHigh > 0) {
               comment += '> ⚠️ **Action Required**: Critical or High severity issues found. Please review and fix them before merging.\n\n';
-              comment += '발견된 취약점에 대한 상세한 내용은 아래 Semgrep Review Comment를 확인하세요.'
+            } else if (total > 0) {
+              comment += '> ℹ️ Issues found. Please review the details below.\n\n';
             }
             
             comment += '---\n\n';
-            
-            // 각 심각도별 상세 내용 추가
-            const addDetailedSection = (severity, data) => {
-              if (data.items.length === 0) return;
-              
-              comment += `### ${data.emoji} ${data.label} Severity Issues (${data.items.length})\n\n`;
-              
-              // 최대 10개까지만 표시
-              const itemsToShow = data.items.slice(0, 10);
-              
-              itemsToShow.forEach((item, index) => {
-                comment += `#### ${index + 1}. ${item.ruleId}\n\n`;
-                comment += `**${item.description}**\n\n`;
-                comment += `📁 \`${item.path}\`:${item.startLine}`;
-                if (item.endLine !== item.startLine) {
-                  comment += `-${item.endLine}`;
-                }
-                comment += '\n\n';
-                
-                // 코드 스니펫 추가
-                if (item.snippet) {
-                  const language = item.path.endsWith('.py') ? 'python' : 
-                                  item.path.endsWith('.js') ? 'javascript' : 
-                                  item.path.endsWith('.java') ? 'java' : '';
-                  comment += '```' + language + '\n';
-                  comment += item.snippet.trim();
-                  comment += '\n```\n\n';
-                }
-                
-                comment += `💬 ${item.message}\n\n`;
-                comment += '---\n\n';
-              });
-              
-              if (data.items.length > 10) {
-                comment += `*... and ${data.items.length - 10} more ${data.label.toLowerCase()} severity issues*\n\n`;
-              }
-            };
-            
-            // Critical부터 순서대로 추가
-            addDetailedSection('critical', severityMap.critical);
-            addDetailedSection('high', severityMap.high);
-            addDetailedSection('medium', severityMap.medium);
-            addDetailedSection('low', severityMap.low);
-            addDetailedSection('info', severityMap.info);
-            
-            // 푸터 추가
-            comment += '\n### 📚 Additional Resources\n\n';
+            comment += '### 📝 Detailed Findings\n\n';
+            comment += '**All security findings are available as inline review comments in the "Files changed" tab.**\n\n';
+            comment += 'Each issue includes:\n';
+            comment += '- 🎯 Exact location in your code\n';
+            comment += '- 📖 Detailed explanation of the vulnerability\n';
+            comment += '- 💡 Recommendations for fixing\n';
+            comment += '- 🔗 Links to documentation\n\n';
+            comment += '👉 **[Go to Files changed tab to see all inline comments](';
+            comment += `https://github.com/${context.repo.owner}/${context.repo.repo}/pull/${context.issue.number}/files)**\n\n`;
+            comment += '---\n\n';
+            comment += '### 📚 Additional Resources\n\n';
             comment += `- [View all findings in Security tab](https://github.com/${context.repo.owner}/${context.repo.repo}/security/code-scanning)\n`;
             comment += `- [Semgrep Rule Documentation](https://semgrep.dev/r)\n`;
-            comment += '\n> 💡 **Tip**: Click on rule IDs to learn more about each vulnerability and how to fix it.\n';
+            comment += `- [Semgrep Playground](https://semgrep.dev/playground) - Test rules interactively\n`;
+            comment += '\n> 💡 **Tip**: Click "Resolve conversation" on each inline comment after fixing the issue.\n';
             
             // 코멘트 길이 제한
             if (comment.length > 65000) {
@@ -292,9 +321,13 @@ jobs:
               const headSha = pr.data.head.sha;
               
               // Review 생성 (인라인 코멘트를 그룹화)
+              // 변경된 파일만 스캔했으므로 모든 결과가 PR diff에 포함됨
               const reviewComments = criticalAndHighIssues.slice(0, 10).map(item => {
+                // path 정규화 (앞에 붙은 ./ 또는 / 제거)
+                const normalizedPath = item.path.replace(/^\.?\//, '');
+                
                 // 등급별 이모지와 텍스트 매핑
-                const severityMap = {
+                const severityDisplayMap = {
                   'critical': { emoji: '🔴', text: 'Critical' },
                   'high':     { emoji: '🟠', text: 'High' },
                   'medium':   { emoji: '🟡', text: 'Medium' },
@@ -303,14 +336,16 @@ jobs:
                 };
 
                 // 매핑 정보가 없을 경우를 대비한 기본값 설정
-                const { emoji, text } = severityMap[item.severity.toLowerCase()] || { emoji: '⚪', text: item.severity };
+                const { emoji, text } = severityDisplayMap[item.severity.toLowerCase()] || { emoji: '⚪', text: item.severity };
+
                 let body = `## ${emoji} ${text}: ${item.ruleId}\n\n`;
+              
                 body += `**${item.description}**\n\n`;
                 body += `💬 ${item.message}\n\n`;
                 body += `[Learn more about this rule](https://semgrep.dev/r/${item.ruleId})`;
                 
                 return {
-                  path: item.path,
+                  path: normalizedPath,
                   line: item.startLine,
                   body: body
                 };
@@ -325,8 +360,25 @@ jobs:
                   event: 'COMMENT',
                   comments: reviewComments
                 });
+                console.log(`${reviewComments.length}개의 인라인 리뷰 코멘트 생성 완료`);
               } catch (error) {
                 console.log('인라인 리뷰 코멘트 생성 실패:', error.message);
-                // 실패해도 요약 코멘트는 이미 생성되었으므로 계속 진행
+                // 개별 코멘트 시도 (일부만 실패할 경우를 위해)
+                for (const comment of reviewComments) {
+                  try {
+                    await github.rest.pulls.createReviewComment({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      pull_number: context.issue.number,
+                      commit_id: headSha,
+                      path: comment.path,
+                      line: comment.line,
+                      body: comment.body
+                    });
+                    console.log(`개별 코멘트 생성 성공: ${comment.path}:${comment.line}`);
+                  } catch (individualError) {
+                    console.log(`개별 코멘트 생성 실패 (${comment.path}:${comment.line}):`, individualError.message);
+                  }
+                }
               }
             }
