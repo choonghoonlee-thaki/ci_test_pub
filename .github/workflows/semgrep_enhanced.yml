@@ -27,8 +27,48 @@ jobs:
         with:
           fetch-depth: 0
       
-      - name: Run Semgrep Security Audit
+      # PR인 경우 변경된 파일 목록 가져오기
+      - name: Get changed files (PR only)
+        id: changed-files
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const prFiles = await github.rest.pulls.listFiles({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+              per_page: 100
+            });
+            
+            // 스캔 가능한 파일 확장자 필터링 (삭제된 파일 제외)
+            const scanExtensions = ['.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.go', '.rb', '.php', '.c', '.cpp', '.h', '.cs', '.swift', '.kt', '.scala', '.rs'];
+            
+            const changedFiles = prFiles.data
+              .filter(file => file.status !== 'removed')
+              .filter(file => scanExtensions.some(ext => file.filename.endsWith(ext)))
+              .map(file => file.filename);
+            
+            console.log('변경된 스캔 대상 파일:', changedFiles);
+            
+            if (changedFiles.length === 0) {
+              console.log('스캔할 파일이 없습니다.');
+              core.setOutput('has_files', 'false');
+              core.setOutput('files', '');
+            } else {
+              core.setOutput('has_files', 'true');
+              // 파일 목록을 공백으로 구분하여 저장
+              core.setOutput('files', changedFiles.join(' '));
+            }
+            
+            return changedFiles;
+      
+      # Push인 경우: 전체 스캔
+      - name: Run Semgrep Full Scan (Push)
+        if: github.event_name == 'push'
         run: |
+          echo "🔍 Push 이벤트: 전체 코드베이스 스캔"
           semgrep scan \
             --config p/security-audit \
             --sarif \
@@ -36,6 +76,28 @@ jobs:
             --verbose
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      # PR인 경우: 변경된 파일만 스캔
+      - name: Run Semgrep Diff Scan (PR)
+        if: github.event_name == 'pull_request' && steps.changed-files.outputs.has_files == 'true'
+        run: |
+          echo "🔍 PR 이벤트: 변경된 파일만 스캔"
+          echo "스캔 대상 파일: ${{ steps.changed-files.outputs.files }}"
+          semgrep scan \
+            --config p/security-audit \
+            --sarif \
+            --output=semgrep.sarif \
+            --verbose \
+            ${{ steps.changed-files.outputs.files }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      # PR에서 스캔할 파일이 없는 경우 빈 SARIF 생성
+      - name: Create empty SARIF (No scannable files)
+        if: github.event_name == 'pull_request' && steps.changed-files.outputs.has_files == 'false'
+        run: |
+          echo "스캔할 파일이 없습니다. 빈 SARIF 파일 생성."
+          echo '{"version":"2.1.0","$schema":"https://json.schemastore.org/sarif-2.1.0.json","runs":[{"tool":{"driver":{"name":"Semgrep","semanticVersion":"1.0.0","rules":[]}},"results":[]}]}' > semgrep.sarif
       
       - name: Upload SARIF to GitHub Security
         uses: github/codeql-action/upload-sarif@v3
@@ -65,7 +127,7 @@ jobs:
             const rules = sarif.runs?.[0]?.tool?.driver?.rules || [];
             
             if (results.length === 0) {
-              const comment = '## ✅ Semgrep 스캔 완료\n\n보안 이슈가 발견되지 않았습니다.';
+              const comment = '## ✅ Semgrep 스캔 완료\n\n변경된 파일에서 보안 이슈가 발견되지 않았습니다.';
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -192,8 +254,9 @@ jobs:
             const totalInfo = severityMap.info.items.length;
             const total = totalCritical + totalHigh + totalMedium + totalLow + totalInfo;
             
-            // Summary 코멘트 생성 (상세 내용 제외)
+            // Summary 코멘트 생성
             let comment = '## 🔍 Semgrep Security Scan Results\n\n';
+            comment += '> 📂 **Scanned**: Changed files in this PR only\n\n';
             comment += '### 📊 Summary\n\n';
             comment += '| Severity | Count |\n';
             comment += '|----------|-------|\n';
@@ -258,9 +321,13 @@ jobs:
               const headSha = pr.data.head.sha;
               
               // Review 생성 (인라인 코멘트를 그룹화)
+              // 변경된 파일만 스캔했으므로 모든 결과가 PR diff에 포함됨
               const reviewComments = criticalAndHighIssues.slice(0, 10).map(item => {
-              // 등급별 이모지와 텍스트 매핑
-                const severityMap = {
+                // path 정규화 (앞에 붙은 ./ 또는 / 제거)
+                const normalizedPath = item.path.replace(/^\.?\//, '');
+                
+                // 등급별 이모지와 텍스트 매핑
+                const severityDisplayMap = {
                   'critical': { emoji: '🔴', text: 'Critical' },
                   'high':     { emoji: '🟠', text: 'High' },
                   'medium':   { emoji: '🟡', text: 'Medium' },
@@ -269,17 +336,16 @@ jobs:
                 };
 
                 // 매핑 정보가 없을 경우를 대비한 기본값 설정
-                const { emoji, text } = severityMap[item.severity.toLowerCase()] || { emoji: '⚪', text: item.severity };
+                const { emoji, text } = severityDisplayMap[item.severity.toLowerCase()] || { emoji: '⚪', text: item.severity };
 
                 let body = `## ${emoji} ${text}: ${item.ruleId}\n\n`;
-              
               
                 body += `**${item.description}**\n\n`;
                 body += `💬 ${item.message}\n\n`;
                 body += `[Learn more about this rule](https://semgrep.dev/r/${item.ruleId})`;
                 
                 return {
-                  path: item.path,
+                  path: normalizedPath,
                   line: item.startLine,
                   body: body
                 };
@@ -294,8 +360,25 @@ jobs:
                   event: 'COMMENT',
                   comments: reviewComments
                 });
+                console.log(`${reviewComments.length}개의 인라인 리뷰 코멘트 생성 완료`);
               } catch (error) {
                 console.log('인라인 리뷰 코멘트 생성 실패:', error.message);
-                // 실패해도 요약 코멘트는 이미 생성되었으므로 계속 진행
+                // 개별 코멘트 시도 (일부만 실패할 경우를 위해)
+                for (const comment of reviewComments) {
+                  try {
+                    await github.rest.pulls.createReviewComment({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      pull_number: context.issue.number,
+                      commit_id: headSha,
+                      path: comment.path,
+                      line: comment.line,
+                      body: comment.body
+                    });
+                    console.log(`개별 코멘트 생성 성공: ${comment.path}:${comment.line}`);
+                  } catch (individualError) {
+                    console.log(`개별 코멘트 생성 실패 (${comment.path}:${comment.line}):`, individualError.message);
+                  }
+                }
               }
             }
