@@ -49,6 +49,7 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
+            // PR 요약 코멘트 (Conversation 탭)와 인라인 리뷰 코멘트 (Files changed 탭) 모두 생성
             const fs = require('fs');
             
             // SARIF 파일 읽기
@@ -264,9 +265,56 @@ jobs:
               comment = comment.substring(0, 65000) + '\n\n... (truncated due to length)';
             }
             
+            // 1. PR 요약 코멘트 생성 (Conversation 탭)
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
               body: comment
             });
+            
+            // 2. 인라인 리뷰 코멘트 생성 (Files changed 탭에 Reply 버튼 포함)
+            // Critical/High 이슈만 인라인 코멘트로 추가
+            const criticalAndHighIssues = [
+              ...severityMap.critical.items,
+              ...severityMap.high.items
+            ];
+            
+            if (criticalAndHighIssues.length > 0) {
+              // PR의 HEAD SHA 가져오기
+              const pr = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.issue.number
+              });
+              
+              const headSha = pr.data.head.sha;
+              
+              // Review 생성 (인라인 코멘트를 그룹화)
+              const reviewComments = criticalAndHighIssues.slice(0, 10).map(item => {
+                let body = `## 🔴 ${item.severity === 'critical' ? 'Critical' : 'High'}: ${item.ruleId}\n\n`;
+                body += `**${item.description}**\n\n`;
+                body += `💬 ${item.message}\n\n`;
+                body += `[Learn more about this rule](https://semgrep.dev/r/${item.ruleId})`;
+                
+                return {
+                  path: item.path,
+                  line: item.startLine,
+                  body: body
+                };
+              });
+              
+              try {
+                await github.rest.pulls.createReview({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: context.issue.number,
+                  commit_id: headSha,
+                  event: 'COMMENT',
+                  comments: reviewComments
+                });
+              } catch (error) {
+                console.log('인라인 리뷰 코멘트 생성 실패:', error.message);
+                // 실패해도 요약 코멘트는 이미 생성되었으므로 계속 진행
+              }
+            }
