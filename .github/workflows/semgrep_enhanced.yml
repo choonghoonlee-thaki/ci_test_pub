@@ -262,7 +262,8 @@ jobs:
               
               // Review 생성 (인라인 코멘트를 그룹화)
               const reviewComments = criticalAndHighIssues.slice(0, 10).map(item => {
-                let body = `## 🔴 ${item.severity === 'critical' ? 'Critical' : 'High'}: ${item.ruleId}\n\n`;
+                const severityLabel = item.severity.charAt(0).toUpperCase() + item.severity.slice(1);
+                let body = `## ${emoji} ${severityLabel} Severity: ${item.ruleId}\n\n`;
                 body += `**${item.description}**\n\n`;
                 body += `💬 ${item.message}\n\n`;
                 body += `[Learn more about this rule](https://semgrep.dev/r/${item.ruleId})`;
