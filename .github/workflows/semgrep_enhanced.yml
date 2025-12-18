@@ -1,0 +1,194 @@
+name: Semgrep Enhanced Scan
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+permissions:
+  contents: read
+  pull-requests: write
+  security-events: write
+  actions: read
+
+jobs:
+  semgrep:
+    name: Run Semgrep Enhanced
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    
+    if: (github.actor != 'dependabot[bot]')
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Run Semgrep with multiple rulesets
+        run: |
+          semgrep scan \
+            --config p/security-audit \
+            --config p/owasp-top-ten \
+            --config p/ci \
+            --sarif \
+            --output=semgrep.sarif \
+            --verbose
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Pro 기능 사용시 추가 (선택사항)
+          # SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+      
+      - name: Upload SARIF to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: semgrep.sarif
+      
+      - name: Enhanced PR Comment with Code Snippets
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            
+            // SARIF 파일 읽기
+            let sarif;
+            try {
+              sarif = JSON.parse(fs.readFileSync('semgrep.sarif', 'utf8'));
+            } catch (error) {
+              console.log('SARIF 파일을 찾을 수 없습니다:', error);
+              return;
+            }
+            
+            const results = sarif.runs?.[0]?.results || [];
+            
+            if (results.length === 0) {
+              const comment = '## ✅ Semgrep 스캔 완료\n\n보안 이슈가 발견되지 않았습니다.';
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: comment
+              });
+              return;
+            }
+            
+            // 심각도별로 그룹화 및 데이터 수집
+            const severityMap = {
+              error: { emoji: '🔴', label: 'Critical/High', items: [] },
+              warning: { emoji: '🟡', label: 'Medium', items: [] },
+              note: { emoji: 'ℹ️', label: 'Low/Info', items: [] }
+            };
+            
+            results.forEach(result => {
+              const level = result.level || 'note';
+              const location = result.locations?.[0]?.physicalLocation;
+              if (!location) return;
+              
+              const path = location.artifactLocation?.uri || 'unknown';
+              const startLine = location.region?.startLine || 0;
+              const endLine = location.region?.endLine || startLine;
+              const message = result.message?.text || 'No message';
+              const ruleId = result.ruleId || 'unknown';
+              
+              // 코드 스니펫 추출
+              const snippet = location.region?.snippet?.text || '';
+              
+              // 규칙 상세 정보
+              const rule = sarif.runs[0].tool.driver.rules?.find(r => r.id === ruleId);
+              const severity = rule?.properties?.['security-severity'] || 
+                              rule?.defaultConfiguration?.level || level;
+              const description = rule?.shortDescription?.text || 
+                                 rule?.fullDescription?.text || message;
+              
+              if (severityMap[level]) {
+                severityMap[level].items.push({
+                  path,
+                  startLine,
+                  endLine,
+                  message,
+                  ruleId,
+                  snippet,
+                  description,
+                  severity
+                });
+              }
+            });
+            
+            // 통계 계산
+            const totalCritical = severityMap.error.items.length;
+            const totalMedium = severityMap.warning.items.length;
+            const totalLow = severityMap.note.items.length;
+            const total = totalCritical + totalMedium + totalLow;
+            
+            // 코멘트 헤더 생성
+            let comment = '## 🔍 Semgrep Security Scan Results\n\n';
+            comment += '### 📊 Summary\n\n';
+            comment += '| Severity | Count |\n';
+            comment += '|----------|-------|\n';
+            comment += `| 🔴 **Critical/High** | **${totalCritical}** |\n`;
+            comment += `| 🟡 Medium | ${totalMedium} |\n`;
+            comment += `| ℹ️ Low/Info | ${totalLow} |\n`;
+            comment += `| **Total** | **${total}** |\n\n`;
+            comment += '---\n\n';
+            
+            // 각 심각도별 상세 내용 추가
+            const addDetailedSection = (level, data) => {
+              if (data.items.length === 0) return;
+              
+              comment += `### ${data.emoji} ${data.label} Issues (${data.items.length})\n\n`;
+              
+              // 최대 10개까지만 표시 (너무 길어지는 것 방지)
+              const itemsToShow = data.items.slice(0, 10);
+              
+              itemsToShow.forEach((item, index) => {
+                comment += `#### ${index + 1}. ${item.ruleId}\n\n`;
+                comment += `**${item.description}**\n\n`;
+                comment += `📁 \`${item.path}\` (Line ${item.startLine}`;
+                if (item.endLine !== item.startLine) {
+                  comment += `-${item.endLine}`;
+                }
+                comment += ')\n\n';
+                
+                // 코드 스니펫 추가
+                if (item.snippet) {
+                  comment += '```python\n';
+                  comment += item.snippet.trim();
+                  comment += '\n```\n\n';
+                }
+                
+                comment += `💬 ${item.message}\n\n`;
+                comment += '---\n\n';
+              });
+              
+              if (data.items.length > 10) {
+                comment += `*... and ${data.items.length - 10} more ${data.label.toLowerCase()} issues*\n\n`;
+              }
+            };
+            
+            // Critical부터 순서대로 추가
+            addDetailedSection('error', severityMap.error);
+            addDetailedSection('warning', severityMap.warning);
+            addDetailedSection('note', severityMap.note);
+            
+            // 푸터 추가
+            comment += '\n### 📚 Additional Resources\n\n';
+            comment += `- [View all findings in Security tab](https://github.com/${context.repo.owner}/${context.repo.repo}/security/code-scanning)\n`;
+            comment += `- [Semgrep Rule Documentation](https://semgrep.dev/r)\n`;
+            comment += '\n> 💡 **Tip**: Click on rule IDs to learn more about each vulnerability and how to fix it.\n';
+            
+            // 코멘트가 너무 길면 GitHub API 제한에 걸릴 수 있으므로 확인
+            if (comment.length > 65000) {
+              comment = comment.substring(0, 65000) + '\n\n... (truncated due to length)';
+            }
+            
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: comment
+            });
