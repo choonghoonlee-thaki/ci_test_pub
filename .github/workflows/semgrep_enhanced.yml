@@ -104,6 +104,7 @@ jobs:
         if: always()
         with:
           sarif_file: semgrep.sarif
+        continue-on-error: true
       
       - name: Enhanced PR Comment with Code Snippets
         if: always() && github.event_name == 'pull_request'
