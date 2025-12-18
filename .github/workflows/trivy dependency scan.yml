@@ -192,11 +192,12 @@ jobs:
             // CRITICAL 취약점
             if (vulnerabilities.CRITICAL.length > 0) {
               comment += `### 🔴 CRITICAL (${vulnerabilities.CRITICAL.length})\n\n`;
-              comment += '| Package | Vulnerability | Installed | Fixed | Description |\n';
-              comment += '|---------|---------------|-----------|-------|-------------|\n';
+              comment += '| Source | Package | Vulnerability | Installed | Fixed | Description |\n';
+              comment += '|--------|---------|---------------|-----------|-------|-------------|\n';
               vulnerabilities.CRITICAL.forEach(vuln => {
-                const title = vuln.title.length > 50 ? vuln.title.substring(0, 50) + '...' : vuln.title;
-                comment += `| \`${vuln.pkg}\` | [${vuln.id}](https://nvd.nist.gov/vuln/detail/${vuln.id}) | ${vuln.version} | ${vuln.fixed} | ${title} |\n`;
+                const title = vuln.title.length > 40 ? vuln.title.substring(0, 40) + '...' : vuln.title;
+                const source = vuln.target.split('/').pop(); // 파일명만 추출
+                comment += `| \`${source}\` | \`${vuln.pkg}\` | [${vuln.id}](https://nvd.nist.gov/vuln/detail/${vuln.id}) | ${vuln.version} | ${vuln.fixed} | ${title} |\n`;
               });
               comment += '\n';
             }
@@ -204,25 +205,27 @@ jobs:
             // HIGH 취약점
             if (vulnerabilities.HIGH.length > 0) {
               comment += `### 🟠 HIGH (${vulnerabilities.HIGH.length})\n\n`;
-              comment += '| Package | Vulnerability | Installed | Fixed | Description |\n';
-              comment += '|---------|---------------|-----------|-------|-------------|\n';
+              comment += '| Source | Package | Vulnerability | Installed | Fixed | Description |\n';
+              comment += '|--------|---------|---------------|-----------|-------|-------------|\n';
               vulnerabilities.HIGH.forEach(vuln => {
-                const title = vuln.title.length > 50 ? vuln.title.substring(0, 50) + '...' : vuln.title;
-                comment += `| \`${vuln.pkg}\` | [${vuln.id}](https://nvd.nist.gov/vuln/detail/${vuln.id}) | ${vuln.version} | ${vuln.fixed} | ${title} |\n`;
+                const title = vuln.title.length > 40 ? vuln.title.substring(0, 40) + '...' : vuln.title;
+                const source = vuln.target.split('/').pop();
+                comment += `| \`${source}\` | \`${vuln.pkg}\` | [${vuln.id}](https://nvd.nist.gov/vuln/detail/${vuln.id}) | ${vuln.version} | ${vuln.fixed} | ${title} |\n`;
               });
               comment += '\n';
             }
             
-            // MEDIUM 취약점 (접힌 상태로)
+            // MEDIUM 취약점
             if (vulnerabilities.MEDIUM.length > 0) {
-              comment += `<details>\n<summary>🟡 MEDIUM (${vulnerabilities.MEDIUM.length}) - 클릭하여 펼치기</summary>\n\n`;
-              comment += '| Package | Vulnerability | Installed | Fixed | Description |\n';
-              comment += '|---------|---------------|-----------|-------|-------------|\n';
+              comment += `### 🟡 MEDIUM (${vulnerabilities.MEDIUM.length})\n\n`;
+              comment += '| Source | Package | Vulnerability | Installed | Fixed | Description |\n';
+              comment += '|--------|---------|---------------|-----------|-------|-------------|\n';
               vulnerabilities.MEDIUM.forEach(vuln => {
-                const title = vuln.title.length > 50 ? vuln.title.substring(0, 50) + '...' : vuln.title;
-                comment += `| \`${vuln.pkg}\` | [${vuln.id}](https://nvd.nist.gov/vuln/detail/${vuln.id}) | ${vuln.version} | ${vuln.fixed} | ${title} |\n`;
+                const title = vuln.title.length > 40 ? vuln.title.substring(0, 40) + '...' : vuln.title;
+                const source = vuln.target.split('/').pop();
+                comment += `| \`${source}\` | \`${vuln.pkg}\` | [${vuln.id}](https://nvd.nist.gov/vuln/detail/${vuln.id}) | ${vuln.version} | ${vuln.fixed} | ${title} |\n`;
               });
-              comment += '\n</details>\n\n';
+              comment += '\n';
             }
             
             comment += '---\n\n';
