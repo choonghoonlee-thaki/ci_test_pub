@@ -1,4 +1,4 @@
-ame: trivy dependency scan
+name: trivy dependency scan
 on:
   push:
     branches: [ "master" ]
