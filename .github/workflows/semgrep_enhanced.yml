@@ -192,7 +192,7 @@ jobs:
             const totalInfo = severityMap.info.items.length;
             const total = totalCritical + totalHigh + totalMedium + totalLow + totalInfo;
             
-            // 코멘트 헤더 생성
+            // Summary 코멘트 생성 (상세 내용 제외)
             let comment = '## 🔍 Semgrep Security Scan Results\n\n';
             comment += '### 📊 Summary\n\n';
             comment += '| Severity | Count |\n';
@@ -206,60 +206,26 @@ jobs:
             
             if (totalCritical > 0 || totalHigh > 0) {
               comment += '> ⚠️ **Action Required**: Critical or High severity issues found. Please review and fix them before merging.\n\n';
-              comment += '발견된 취약점에 대한 상세한 내용은 아래 Semgrep Review Comment를 확인하세요.'
+            } else if (total > 0) {
+              comment += '> ℹ️ Issues found. Please review the details below.\n\n';
             }
             
             comment += '---\n\n';
-            
-            // 각 심각도별 상세 내용 추가
-            const addDetailedSection = (severity, data) => {
-              if (data.items.length === 0) return;
-              
-              comment += `### ${data.emoji} ${data.label} Severity Issues (${data.items.length})\n\n`;
-              
-              // 최대 10개까지만 표시
-              const itemsToShow = data.items.slice(0, 10);
-              
-              itemsToShow.forEach((item, index) => {
-                comment += `#### ${index + 1}. ${item.ruleId}\n\n`;
-                comment += `**${item.description}**\n\n`;
-                comment += `📁 \`${item.path}\`:${item.startLine}`;
-                if (item.endLine !== item.startLine) {
-                  comment += `-${item.endLine}`;
-                }
-                comment += '\n\n';
-                
-                // 코드 스니펫 추가
-                if (item.snippet) {
-                  const language = item.path.endsWith('.py') ? 'python' : 
-                                  item.path.endsWith('.js') ? 'javascript' : 
-                                  item.path.endsWith('.java') ? 'java' : '';
-                  comment += '```' + language + '\n';
-                  comment += item.snippet.trim();
-                  comment += '\n```\n\n';
-                }
-                
-                comment += `💬 ${item.message}\n\n`;
-                comment += '---\n\n';
-              });
-              
-              if (data.items.length > 10) {
-                comment += `*... and ${data.items.length - 10} more ${data.label.toLowerCase()} severity issues*\n\n`;
-              }
-            };
-            
-            // Critical부터 순서대로 추가
-            addDetailedSection('critical', severityMap.critical);
-            addDetailedSection('high', severityMap.high);
-            addDetailedSection('medium', severityMap.medium);
-            addDetailedSection('low', severityMap.low);
-            addDetailedSection('info', severityMap.info);
-            
-            // 푸터 추가
-            comment += '\n### 📚 Additional Resources\n\n';
+            comment += '### 📝 Detailed Findings\n\n';
+            comment += '**All security findings are available as inline review comments in the "Files changed" tab.**\n\n';
+            comment += 'Each issue includes:\n';
+            comment += '- 🎯 Exact location in your code\n';
+            comment += '- 📖 Detailed explanation of the vulnerability\n';
+            comment += '- 💡 Recommendations for fixing\n';
+            comment += '- 🔗 Links to documentation\n\n';
+            comment += '👉 **[Go to Files changed tab to see all inline comments](';
+            comment += `https://github.com/${context.repo.owner}/${context.repo.repo}/pull/${context.issue.number}/files)**\n\n`;
+            comment += '---\n\n';
+            comment += '### 📚 Additional Resources\n\n';
             comment += `- [View all findings in Security tab](https://github.com/${context.repo.owner}/${context.repo.repo}/security/code-scanning)\n`;
             comment += `- [Semgrep Rule Documentation](https://semgrep.dev/r)\n`;
-            comment += '\n> 💡 **Tip**: Click on rule IDs to learn more about each vulnerability and how to fix it.\n';
+            comment += `- [Semgrep Playground](https://semgrep.dev/playground) - Test rules interactively\n`;
+            comment += '\n> 💡 **Tip**: Click "Resolve conversation" on each inline comment after fixing the issue.\n';
             
             // 코멘트 길이 제한
             if (comment.length > 65000) {
@@ -293,7 +259,7 @@ jobs:
               
               // Review 생성 (인라인 코멘트를 그룹화)
               const reviewComments = criticalAndHighIssues.slice(0, 10).map(item => {
-                // 등급별 이모지와 텍스트 매핑
+              // 등급별 이모지와 텍스트 매핑
                 const severityMap = {
                   'critical': { emoji: '🔴', text: 'Critical' },
                   'high':     { emoji: '🟠', text: 'High' },
@@ -304,7 +270,10 @@ jobs:
 
                 // 매핑 정보가 없을 경우를 대비한 기본값 설정
                 const { emoji, text } = severityMap[item.severity.toLowerCase()] || { emoji: '⚪', text: item.severity };
+
                 let body = `## ${emoji} ${text}: ${item.ruleId}\n\n`;
+              
+              
                 body += `**${item.description}**\n\n`;
                 body += `💬 ${item.message}\n\n`;
                 body += `[Learn more about this rule](https://semgrep.dev/r/${item.ruleId})`;
