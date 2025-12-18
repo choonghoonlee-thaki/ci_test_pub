@@ -244,7 +244,10 @@ jobs:
             // Critical/High 이슈만 인라인 코멘트로 추가
             const criticalAndHighIssues = [
               ...severityMap.critical.items,
-              ...severityMap.high.items
+              ...severityMap.high.items, 
+              ...severityMap.medium.items,    
+              ...severityMap.low.items, 
+              ...severityMap.info.items
             ];
             
             if (criticalAndHighIssues.length > 0) {
