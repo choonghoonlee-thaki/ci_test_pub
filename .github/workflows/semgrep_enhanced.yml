@@ -304,13 +304,16 @@ jobs:
             });
             
             // 2. 인라인 리뷰 코멘트 생성 (Files changed 탭에 Reply 버튼 포함)
-            // Critical/High 이슈만 인라인 코멘트로 추가
-            const criticalAndHighIssues = [
+            // 모든 심각도의 이슈를 인라인 코멘트로 추가
+            const allIssues = [
               ...severityMap.critical.items,
-              ...severityMap.high.items
+              ...severityMap.high.items,
+              ...severityMap.medium.items,
+              ...severityMap.low.items,
+              ...severityMap.info.items
             ];
             
-            if (criticalAndHighIssues.length > 0) {
+            if (allIssues.length > 0) {
               // PR의 HEAD SHA 가져오기
               const pr = await github.rest.pulls.get({
                 owner: context.repo.owner,
@@ -322,7 +325,8 @@ jobs:
               
               // Review 생성 (인라인 코멘트를 그룹화)
               // 변경된 파일만 스캔했으므로 모든 결과가 PR diff에 포함됨
-              const reviewComments = criticalAndHighIssues.slice(0, 10).map(item => {
+              // 최대 25개까지 인라인 코멘트 생성 (GitHub API 제한 고려)
+              const reviewComments = allIssues.slice(0, 25).map(item => {
                 // path 정규화 (앞에 붙은 ./ 또는 / 제거)
                 const normalizedPath = item.path.replace(/^\.?\//, '');
                 
