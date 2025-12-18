@@ -1,0 +1,272 @@
+name: Semgrep Security Scan
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+permissions:
+  contents: read
+  pull-requests: write
+  security-events: write
+  actions: read
+
+jobs:
+  semgrep:
+    name: Run Semgrep Security Scan
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    
+    if: (github.actor != 'dependabot[bot]')
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Run Semgrep Security Audit
+        run: |
+          semgrep scan \
+            --config p/security-audit \
+            --sarif \
+            --output=semgrep.sarif \
+            --verbose
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Upload SARIF to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: semgrep.sarif
+      
+      - name: Enhanced PR Comment with Code Snippets
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            
+            // SARIF 파일 읽기
+            let sarif;
+            try {
+              sarif = JSON.parse(fs.readFileSync('semgrep.sarif', 'utf8'));
+            } catch (error) {
+              console.log('SARIF 파일을 찾을 수 없습니다:', error);
+              return;
+            }
+            
+            const results = sarif.runs?.[0]?.results || [];
+            const rules = sarif.runs?.[0]?.tool?.driver?.rules || [];
+            
+            if (results.length === 0) {
+              const comment = '## ✅ Semgrep 스캔 완료\n\n보안 이슈가 발견되지 않았습니다.';
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: comment
+              });
+              return;
+            }
+            
+            // 규칙 정보를 Map으로 구성
+            const ruleMap = new Map();
+            rules.forEach(rule => {
+              ruleMap.set(rule.id, rule);
+            });
+            
+            // 심각도별로 그룹화
+            const severityMap = {
+              critical: { emoji: '🔴', label: 'Critical', items: [] },
+              high: { emoji: '🟠', label: 'High', items: [] },
+              medium: { emoji: '🟡', label: 'Medium', items: [] },
+              low: { emoji: '🔵', label: 'Low', items: [] },
+              info: { emoji: 'ℹ️', label: 'Info', items: [] }
+            };
+            
+            // 중복 제거를 위한 Set
+            const seenIssues = new Set();
+            
+            results.forEach(result => {
+              const location = result.locations?.[0]?.physicalLocation;
+              if (!location) return;
+              
+              const ruleId = result.ruleId || 'unknown';
+              const path = location.artifactLocation?.uri || 'unknown';
+              const startLine = location.region?.startLine || 0;
+              const endLine = location.region?.endLine || startLine;
+              
+              // 중복 체크 (같은 파일, 같은 라인, 같은 규칙은 스킵)
+              const issueKey = `${ruleId}:${path}:${startLine}`;
+              if (seenIssues.has(issueKey)) {
+                return;
+              }
+              seenIssues.add(issueKey);
+              
+              const message = result.message?.text || 'No message';
+              const snippet = location.region?.snippet?.text || '';
+              
+              // 규칙 정보 가져오기
+              const rule = ruleMap.get(ruleId);
+              const ruleDescription = rule?.shortDescription?.text || 
+                                     rule?.fullDescription?.text || 
+                                     message;
+              
+              // 심각도 결정 (우선순위: level > properties.security-severity > defaultConfiguration.level)
+              let severity = 'info';
+              
+              // 1. result.level 확인
+              const level = result.level?.toLowerCase();
+              if (level === 'error') {
+                severity = 'critical';
+              } else if (level === 'warning') {
+                severity = 'medium';
+              } else if (level === 'note') {
+                severity = 'low';
+              }
+              
+              // 2. rule의 security-severity 확인 (더 정확함)
+              if (rule?.properties?.['security-severity']) {
+                const secSeverity = rule.properties['security-severity'];
+                if (typeof secSeverity === 'string') {
+                  severity = secSeverity.toLowerCase();
+                } else if (typeof secSeverity === 'number') {
+                  // CVSS 점수 기반 변환
+                  if (secSeverity >= 9.0) severity = 'critical';
+                  else if (secSeverity >= 7.0) severity = 'high';
+                  else if (secSeverity >= 4.0) severity = 'medium';
+                  else if (secSeverity >= 0.1) severity = 'low';
+                  else severity = 'info';
+                }
+              }
+              
+              // 3. rule의 defaultConfiguration.level 확인
+              if (!severity || severity === 'info') {
+                const defaultLevel = rule?.defaultConfiguration?.level?.toLowerCase();
+                if (defaultLevel === 'error') severity = 'critical';
+                else if (defaultLevel === 'warning') severity = 'medium';
+                else if (defaultLevel === 'note') severity = 'low';
+              }
+              
+              // 4. 규칙 이름으로 추론 (fallback)
+              if (severity === 'info') {
+                const lowerRuleId = ruleId.toLowerCase();
+                if (lowerRuleId.includes('injection') || 
+                    lowerRuleId.includes('deserialization') ||
+                    lowerRuleId.includes('sql') ||
+                    lowerRuleId.includes('command')) {
+                  severity = 'critical';
+                } else if (lowerRuleId.includes('security')) {
+                  severity = 'high';
+                }
+              }
+              
+              // 심각도가 없으면 info로 처리
+              if (!severityMap[severity]) {
+                severity = 'info';
+              }
+              
+              severityMap[severity].items.push({
+                path,
+                startLine,
+                endLine,
+                message,
+                ruleId,
+                snippet,
+                description: ruleDescription,
+                severity
+              });
+            });
+            
+            // 통계 계산
+            const totalCritical = severityMap.critical.items.length;
+            const totalHigh = severityMap.high.items.length;
+            const totalMedium = severityMap.medium.items.length;
+            const totalLow = severityMap.low.items.length;
+            const totalInfo = severityMap.info.items.length;
+            const total = totalCritical + totalHigh + totalMedium + totalLow + totalInfo;
+            
+            // 코멘트 헤더 생성
+            let comment = '## 🔍 Semgrep Security Scan Results\n\n';
+            comment += '### 📊 Summary\n\n';
+            comment += '| Severity | Count |\n';
+            comment += '|----------|-------|\n';
+            comment += `| 🔴 **Critical** | **${totalCritical}** |\n`;
+            comment += `| 🟠 **High** | **${totalHigh}** |\n`;
+            comment += `| 🟡 Medium | ${totalMedium} |\n`;
+            comment += `| 🔵 Low | ${totalLow} |\n`;
+            comment += `| ℹ️ Info | ${totalInfo} |\n`;
+            comment += `| **Total** | **${total}** |\n\n`;
+            
+            if (totalCritical > 0 || totalHigh > 0) {
+              comment += '> ⚠️ **Action Required**: Critical or High severity issues found. Please review and fix them before merging.\n\n';
+            }
+            
+            comment += '---\n\n';
+            
+            // 각 심각도별 상세 내용 추가
+            const addDetailedSection = (severity, data) => {
+              if (data.items.length === 0) return;
+              
+              comment += `### ${data.emoji} ${data.label} Severity Issues (${data.items.length})\n\n`;
+              
+              // 최대 10개까지만 표시
+              const itemsToShow = data.items.slice(0, 10);
+              
+              itemsToShow.forEach((item, index) => {
+                comment += `#### ${index + 1}. ${item.ruleId}\n\n`;
+                comment += `**${item.description}**\n\n`;
+                comment += `📁 \`${item.path}\`:${item.startLine}`;
+                if (item.endLine !== item.startLine) {
+                  comment += `-${item.endLine}`;
+                }
+                comment += '\n\n';
+                
+                // 코드 스니펫 추가
+                if (item.snippet) {
+                  const language = item.path.endsWith('.py') ? 'python' : 
+                                  item.path.endsWith('.js') ? 'javascript' : 
+                                  item.path.endsWith('.java') ? 'java' : '';
+                  comment += '```' + language + '\n';
+                  comment += item.snippet.trim();
+                  comment += '\n```\n\n';
+                }
+                
+                comment += `💬 ${item.message}\n\n`;
+                comment += '---\n\n';
+              });
+              
+              if (data.items.length > 10) {
+                comment += `*... and ${data.items.length - 10} more ${data.label.toLowerCase()} severity issues*\n\n`;
+              }
+            };
+            
+            // Critical부터 순서대로 추가
+            addDetailedSection('critical', severityMap.critical);
+            addDetailedSection('high', severityMap.high);
+            addDetailedSection('medium', severityMap.medium);
+            addDetailedSection('low', severityMap.low);
+            addDetailedSection('info', severityMap.info);
+            
+            // 푸터 추가
+            comment += '\n### 📚 Additional Resources\n\n';
+            comment += `- [View all findings in Security tab](https://github.com/${context.repo.owner}/${context.repo.repo}/security/code-scanning)\n`;
+            comment += `- [Semgrep Rule Documentation](https://semgrep.dev/r)\n`;
+            comment += '\n> 💡 **Tip**: Click on rule IDs to learn more about each vulnerability and how to fix it.\n';
+            
+            // 코멘트 길이 제한
+            if (comment.length > 65000) {
+              comment = comment.substring(0, 65000) + '\n\n... (truncated due to length)';
+            }
+            
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: comment
+            });
